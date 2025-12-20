@@ -3,13 +3,15 @@
 ## 1. On-Chip Calibration
 
 This step uses the Intel RealSense D400 series' internal processor to improve depth accuracy and reduce noise. It updates the camera's internal depth table without relying on host-side processing.
+![Alt Text](on_chip_calibration/GetImage.png)
+
 
 ### Prerequisites
 
 * **Software:** Intel RealSense Viewer (`realsense-viewer`) installed via SDK 2.0.
 * **Hardware:** Connect the camera via a **USB 3.0** port (USB 2.0 may restrict bandwidth/features).
 * **Environment:** A flat, **plain white wall** with uniform lighting.
-
+---
 ### Step-by-Step Guide
 ---
 #### 1. Physical Setup
