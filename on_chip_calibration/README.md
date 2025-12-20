@@ -3,7 +3,7 @@
 ## 1. On-Chip Calibration
 
 This step uses the Intel RealSense D400 series' internal processor to improve depth accuracy and reduce noise. It updates the camera's internal depth table without relying on host-side processing.
-![Alt Text](on_chip_calibration/GetImage.png)
+![Alt Text](https://github.com/sai-rupesh01/Intel-RealSense-Calibration/blob/main/on_chip_calibration/GetImage.png)
 
 
 ### Prerequisites
