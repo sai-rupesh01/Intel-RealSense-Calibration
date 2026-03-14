@@ -4,12 +4,13 @@
 
 ![ROS 2](https://img.shields.io/badge/ROS_2-Humble%20%7C%20Jazzy-blue?logo=ros&logoColor=white)
 ![ROS 1](https://img.shields.io/badge/ROS_1-Noetic-orange?logo=ros&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-Containerized-2496ED?logo=docker&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-20.04_Focal-E95420?logo=ubuntu&logoColor=white)
+
 
 **A complete, containerized workflow for calibrating stereo cameras and IMUs using [Kalibr](https://github.com/ethz-asl/kalibr) — without touching your ROS 2 environment.**
 
-[Overview](#overview) · [Prerequisites](#prerequisites) · [Setup](#1-dockerfile-setup) · [Recording](#2-recording-data-in-ros-2) · [Conversion](#3-converting-ros-2-bag-to-ros-1) · [Calibration](#5-running-calibration) · [Config Files](#configuration-files)
+[Overview](#overview) · [Prerequisites](#prerequisites) · [Structure](#repository-structure) · [Docker Compose](#2-docker-compose-setup) · [Recording](#3-recording-data-in-ros-2) · [Conversion](#4-converting-ros-2-bag-to-ros-1) · [Calibration](#6-running-calibration) · [Config Files](#configuration-files)
 
 </div>
 
@@ -27,6 +28,8 @@ ROS 2 (record) ──► rosbags-convert ──► ROS 1 .bag ──► Kalibr D
 
 **What's included:**
 - 🐳 A ready-to-build `Dockerfile` with all Kalibr dependencies
+- 🧩 A `docker-compose.yml` that handles volumes, display, and networking automatically
+- 📂 A shared `data/` volume — bags, configs, and results live here, visible on both host and container
 - 📦 ROS 2 bag recording instructions for Intel RealSense cameras
 - 🔄 ROS 2 → ROS 1 bag conversion using `rosbags-convert`
 - ⚙️ Pre-configured YAML files for stereo + IMU calibration
@@ -43,6 +46,7 @@ Before you begin, make sure the following are installed on your host:
 | Requirement | Version | Notes |
 |---|---|---|
 | Docker | ≥ 20.x | [Install Docker](https://docs.docker.com/get-docker/) |
+| Docker Compose | ≥ 2.x | Bundled with Docker Desktop; `apt install docker-compose-plugin` on Linux |
 | ROS 2 | Humble / Jazzy | Running on host |
 | Python 3 | ≥ 3.8 | For bag conversion |
 | `realsense2_camera` | Latest | ROS 2 RealSense driver |
@@ -54,19 +58,26 @@ Before you begin, make sure the following are installed on your host:
 
 ```
 kalibr-docker/
-├── Dockerfile              # Builds the Kalibr ROS 1 Noetic container
+├── Dockerfile                   # Builds the Kalibr ROS 1 Noetic image
+├── docker-compose.yml           # Manages volumes, display, and container lifecycle
 ├── config/
-│   ├── camchain.yaml       # Stereo camera intrinsics & extrinsics
-│   ├── imu.yaml            # IMU noise parameters
-│   └── aprilgrid.yaml      # Calibration target definition
+│   ├── camchain.yaml            # Stereo camera intrinsics & extrinsics
+│   ├── imu.yaml                 # IMU noise parameters
+│   └── aprilgrid.yaml           # Calibration target definition
+├── data/                        # ← Shared volume (host ↔ container at /data)
+│   ├── calibration_bag_ros2/    #   Raw ROS 2 bag (recorded on host)
+│   ├── calibration_bag_ros1.bag #   Converted ROS 1 bag
+│   └── results/                 #   Kalibr output: YAMLs, PDFs, reports
 └── README.md
 ```
 
+> 📂 **The `data/` folder is the single source of truth.** Everything you record, convert, or calibrate lives here — accessible from both your host machine and the container at `/data` with no manual copying required.
+
 ---
 
-## 1. Dockerfile Setup
+## 1. Dockerfile
 
-Create a `Dockerfile` in your project root. This image is built on **Ubuntu 20.04** and includes ROS Noetic, all Kalibr Python/C++ dependencies, and a pre-built Kalibr catkin workspace.
+The image is built on **Ubuntu 20.04** and includes ROS Noetic, all Kalibr Python/C++ dependencies, and a fully compiled Kalibr catkin workspace.
 
 <details>
 <summary><b>📄 Click to view full Dockerfile</b></summary>
@@ -152,17 +163,113 @@ CMD ["bash"]
 
 </details>
 
-### Build the Docker Image
+---
 
-```bash
-docker build -t kalibr_container .
+## 2. Docker Compose Setup
+
+Instead of long `docker run` commands, Docker Compose handles volumes, display forwarding, and networking in a single declarative file.
+
+### `docker-compose.yml`
+
+```yaml
+services:
+  kalibr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kalibr_container
+    container_name: kalibr
+
+    # Keep the container interactive
+    stdin_open: true
+    tty: true
+
+    # Use host networking so ROS topics resolve correctly
+    network_mode: host
+
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+
+    volumes:
+      # --- Shared data volume (bags, configs, results) ---
+      # Host: ./data/   <-->   Container: /data
+      - ./data:/data
+
+      # --- Config files (read-only inside container) ---
+      # Host: ./config/   <-->   Container: /config
+      - ./config:/config:ro
+
+      # --- X11 socket for GUI display ---
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+    # Always land in /data so you can run Kalibr commands immediately
+    working_dir: /data
 ```
 
-> ⏳ First build takes ~15–25 minutes. Subsequent builds are cached.
+### Volume Mapping at a Glance
+
+| Host path | Container path | Mode | Purpose |
+|---|---|---|---|
+| `./data/` | `/data` | read-write | Bags, converted bags, calibration results |
+| `./config/` | `/config` | read-only | YAML config files |
+| `/tmp/.X11-unix` | `/tmp/.X11-unix` | read-write | GUI display passthrough |
+
+> 🔑 **Key point:** Any file written by Kalibr inside `/data` (YAML results, PDF reports) appears **immediately** in `./data/` on your host. No `docker cp` needed.
+
+### Initial Setup
+
+Create the shared directories before first use:
+
+```bash
+mkdir -p data/results
+```
+
+Your project should now look like:
+
+```
+kalibr-docker/
+├── Dockerfile
+├── docker-compose.yml
+├── config/
+│   ├── camchain.yaml
+│   ├── imu.yaml
+│   └── aprilgrid.yaml
+└── data/
+    └── results/        # Kalibr will write output here
+```
+
+### Build and Start
+
+```bash
+# Allow Docker to access your X display (run once per session)
+xhost +local:docker
+
+# Build the image and start the container
+docker compose up --build -d
+
+# Open a shell inside the running container
+docker compose exec kalibr bash
+```
+
+> ⏳ First build takes ~15–25 minutes. Subsequent builds use the Docker layer cache.
+
+**Other useful Compose commands:**
+
+```bash
+# Stop the container without removing it
+docker compose stop
+
+# Stop and remove the container (image is preserved)
+docker compose down
+
+# Rebuild from scratch (e.g. after Dockerfile changes)
+docker compose build --no-cache
+```
 
 ---
 
-## 2. Recording Data in ROS 2
+## 3. Recording Data in ROS 2
 
 Place your **Kalibr AprilGrid target** (6×8 tags) on a flat wall or board.
 
@@ -178,14 +285,14 @@ ros2 launch realsense2_camera rs_launch.py \
     enable_emitter:=false infra_fps:=15
 ```
 
-> 💡 **Tip:** Set `infra_fps:=15` to keep image rate low enough for Kalibr's feature extraction — 20+ fps can cause issues.
+> 💡 **Tip:** Set `infra_fps:=15` to keep the image rate low enough for Kalibr's feature extraction — 20+ fps can cause issues.
 
 ### Step 2 — Record the Bag
 
-```bash
-mkdir -p ~/kalibr_data
+Record directly into the shared `data/` folder so it's immediately available in the container:
 
-ros2 bag record -o ~/kalibr_data/calibration_bag_ros2 \
+```bash
+ros2 bag record -o ./data/calibration_bag_ros2 \
     /camera/camera/infra1/image_rect_raw \
     /camera/camera/infra1/camera_info \
     /camera/camera/infra2/image_rect_raw \
@@ -196,17 +303,17 @@ ros2 bag record -o ~/kalibr_data/calibration_bag_ros2 \
 
 ### Recording Tips
 
-> 🎯 **Motion pattern matters.** Move the camera in all 6 degrees of freedom — translate in X, Y, Z and rotate around all three axes. Make each motion slow, smooth, and deliberate.
+> 🎯 **Motion pattern matters.** Move the camera in all 6 degrees of freedom — translate in X, Y, Z and rotate around all three axes. Keep each motion slow, smooth, and deliberate.
 >
-> ⏱️ **Duration:** 60–90 seconds of motion is typically sufficient.
+> ⏱️ **Duration:** 60–90 seconds is typically sufficient.
 >
-> 📐 **Distance:** Keep the full AprilGrid visible in both infrared frames throughout.
+> 📐 **Field of view:** Keep the full AprilGrid visible in **both** infrared frames throughout the entire recording.
 
 ---
 
-## 3. Converting ROS 2 Bag to ROS 1
+## 4. Converting ROS 2 Bag to ROS 1
 
-Kalibr requires a ROS 1 `.bag` file. We use `rosbags-convert` for this.
+Kalibr requires a ROS 1 `.bag` file. Run `rosbags-convert` on the **host** (not inside the container).
 
 ### Install `rosbags`
 
@@ -232,8 +339,8 @@ which rosbags-convert
 
 ```bash
 rosbags-convert \
-  --src ~/kalibr_data/calibration_bag_ros2 \
-  --dst ~/kalibr_data/calibration_bag_ros1.bag \
+  --src ./data/calibration_bag_ros2 \
+  --dst ./data/calibration_bag_ros1.bag \
   --dst-storage sqlite3 \
   --dst-typestore ros1_noetic
 ```
@@ -241,75 +348,67 @@ rosbags-convert \
 ### Verify the Converted Bag
 
 ```bash
-rosbag info ~/kalibr_data/calibration_bag_ros1.bag
+rosbag info ./data/calibration_bag_ros1.bag
 ```
 
-You should see all recorded topics listed with message counts and duration.
+You should see all recorded topics listed with message counts and duration. The converted `.bag` is now visible inside the container at `/data/calibration_bag_ros1.bag`.
 
 ---
 
-## 4. Running the Kalibr Docker Container
+## 5. Preparing Config Files
 
-Ensure your `~/kalibr_data/` folder contains:
+Copy your config YAMLs into the `config/` folder. They are mounted read-only inside the container at `/config/`:
 
 ```
-~/kalibr_data/
-├── calibration_bag_ros1.bag
-├── camchain.yaml
-├── imu.yaml
-└── aprilgrid.yaml
+config/                     →   /config/  (inside container)
+├── camchain.yaml           →   /config/camchain.yaml
+├── imu.yaml                →   /config/imu.yaml
+└── aprilgrid.yaml          →   /config/aprilgrid.yaml
 ```
 
-### Allow GUI Access
+Your full `data/` folder before running calibration:
 
-```bash
-xhost +local:docker
 ```
-
-### Launch the Container
-
-```bash
-sudo docker run -it \
-   --net=host \
-   -e DISPLAY=$DISPLAY \
-   -e QT_X11_NO_MITSHM=1 \
-   -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
-   -v ~/kalibr_data/:/data \
-   kalibr_container
+data/
+├── calibration_bag_ros2/        # Raw ROS 2 bag (source)
+├── calibration_bag_ros1.bag     # Converted ROS 1 bag (input to Kalibr)
+└── results/                     # Empty for now — Kalibr writes here
 ```
-
-Your data directory is now available at `/data` inside the container.
 
 ---
 
-## 5. Running Calibration
+## 6. Running Calibration
 
-All commands below are run **inside the Docker container**.
+Open a shell inside the running container:
 
 ```bash
-cd /data
+docker compose exec kalibr bash
 ```
+
+All commands below are run **inside the container**. Your data is at `/data` and configs at `/config`.
 
 ### Option A — Stereo Camera Calibration
 
 ```bash
 rosrun kalibr kalibr_calibrate_cameras \
-    --bag calibration_bag_ros1.bag \
+    --bag /data/calibration_bag_ros1.bag \
     --topics /camera/infra1/image_rect /camera/infra2/image_rect \
     --models pinhole-equi pinhole-equi \
-    --target aprilgrid.yaml
+    --target /config/aprilgrid.yaml \
+    --output-dir /data/results
 ```
 
 ### Option B — Camera–IMU Calibration
 
 ```bash
 rosrun kalibr kalibr_calibrate_imu_camera \
-   --bag calibration_bag_ros1.bag \
-   --cam camchain.yaml \
-   --imu imu.yaml \
-   --target aprilgrid.yaml \
+   --bag /data/calibration_bag_ros1.bag \
+   --cam /config/camchain.yaml \
+   --imu /config/imu.yaml \
+   --target /config/aprilgrid.yaml \
    --timeoffset-padding 0.1 \
-   --show-extraction
+   --show-extraction \
+   --output-dir /data/results
 ```
 
 ### Expected Console Output
@@ -335,7 +434,7 @@ Initializing calibration target:
 
 ### Output Files
 
-Results are saved to your **host machine's** `~/kalibr_data/` folder:
+Results are written to `/data/results/` inside the container, which maps directly to `./data/results/` on your host:
 
 | File | Description |
 |---|---|
@@ -343,6 +442,8 @@ Results are saved to your **host machine's** `~/kalibr_data/` folder:
 | `*-imu.yaml` | Calibrated IMU–camera transform |
 | `*-results-imucam.txt` | Human-readable calibration report |
 | `*-report-imucam.pdf` | Visual PDF report with residual plots |
+
+> ✅ All output is instantly available on your host in `./data/results/` — no file transfer needed.
 
 ---
 
@@ -387,7 +488,7 @@ gyroscope_noise_density:     0.02    # [rad/s/√Hz]
 gyroscope_random_walk:       0.0002  # [rad/s²/√Hz]
 ```
 
-> ⚠️ **Important:** These are generic RealSense values. For best accuracy, replace with values from your camera's datasheet or the [Allan Deviation](https://github.com/gaowenliang/imu_utils) of your specific unit.
+> ⚠️ **Important:** These are generic RealSense values. For best accuracy, replace with values from your camera's datasheet or measure them with [imu_utils](https://github.com/gaowenliang/imu_utils) (Allan Deviation analysis).
 
 ### `config/aprilgrid.yaml`
 
@@ -418,7 +519,22 @@ source ~/.bashrc
 <details>
 <summary><b>❌ Docker GUI / display errors</b></summary>
 
-Run `xhost +local:docker` on your host before launching the container. Ensure `$DISPLAY` is set (usually `:0` or `:1`).
+Run `xhost +local:docker` on your host **before** starting the container. Ensure `$DISPLAY` is set:
+
+```bash
+echo $DISPLAY   # should return :0 or :1, not empty
+```
+
+</details>
+
+<details>
+<summary><b>❌ Permission denied writing to <code>./data/</code></b></summary>
+
+The container runs as root. If files created inside the container are unreadable on the host, fix ownership with:
+
+```bash
+sudo chown -R $USER:$USER ./data/
+```
 
 </details>
 
@@ -427,19 +543,32 @@ Run `xhost +local:docker` on your host before launching the container. Ensure `$
 
 - Ensure the full AprilGrid is visible in **both** camera frames.
 - Reduce infrared fps to `15` or lower.
-- Check that `tagSize` and `tagSpacing` in `aprilgrid.yaml` match your printed target exactly.
-- Improve lighting — infrared works best without strong direct sunlight.
+- Check that `tagSize` and `tagSpacing` in `aprilgrid.yaml` match your **printed** target exactly (measure with a ruler).
+- Improve lighting — infrared works best without strong direct sunlight or IR reflections.
 
 </details>
 
 <details>
 <summary><b>❌ IMU topic mismatch inside container</b></summary>
 
-The IMU topic in your `.bag` file must match `rostopic` in `imu.yaml`. You can inspect topics with:
+The IMU topic recorded in your `.bag` must match `rostopic` in `imu.yaml`. Inspect topics with:
 
 ```bash
-rosbag info calibration_bag_ros1.bag
+rosbag info /data/calibration_bag_ros1.bag
 ```
+
+</details>
+
+<details>
+<summary><b>❌ <code>docker compose</code> command not found</b></summary>
+
+You may have the older standalone `docker-compose` (V1). Install the V2 plugin:
+
+```bash
+sudo apt install docker-compose-plugin
+```
+
+Or replace `docker compose` with `docker-compose` throughout.
 
 </details>
 
@@ -448,24 +577,36 @@ rosbag info calibration_bag_ros1.bag
 ## Workflow Summary
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     HOST MACHINE                         │
-│                                                          │
-│  1. ros2 launch realsense2_camera  ──► camera streams   │
-│  2. ros2 bag record                ──► ROS 2 bag        │
-│  3. rosbags-convert                ──► ROS 1 .bag       │
-│                                                          │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │              DOCKER CONTAINER                     │   │
-│  │                                                   │   │
-│  │  4. kalibr_calibrate_imu_camera                   │   │
-│  │        ──► camchain-results.yaml                  │   │
-│  │        ──► report.pdf                             │   │
-│  │                                                   │   │
-│  └──────────────────────────────────────────────────┘   │
-│                          │                               │
-│        Results saved to ~/kalibr_data/ on host          │
-└─────────────────────────────────────────────────────────┘
+kalibr-docker/
+│
+│  HOST MACHINE
+│
+├─ 1. ros2 launch realsense2_camera      ──► camera streams
+│
+├─ 2. ros2 bag record -o ./data/...      ──► data/calibration_bag_ros2/
+│
+├─ 3. rosbags-convert                    ──► data/calibration_bag_ros1.bag
+│
+├─ 4. docker compose up --build -d       ──► container starts, volumes mounted
+│
+│   ┌────────────────────────────────────────────────────────────┐
+│   │  DOCKER CONTAINER                                          │
+│   │                                                            │
+│   │  /data    <──── bind mount ────>  ./data/    (host)       │
+│   │  /config  <──── bind mount ────>  ./config/  (host, r/o)  │
+│   │                                                            │
+│   │  5. kalibr_calibrate_imu_camera                           │
+│   │       reads:   /data/calibration_bag_ros1.bag             │
+│   │                /config/camchain.yaml                       │
+│   │                /config/imu.yaml                            │
+│   │                /config/aprilgrid.yaml                      │
+│   │       writes:  /data/results/*-camchain.yaml               │
+│   │                /data/results/*-report-imucam.pdf           │
+│   │                /data/results/*-results-imucam.txt          │
+│   │                                                            │
+│   └────────────────────────────────────────────────────────────┘
+│
+└─ Results instantly visible in ./data/results/ on host ✅
 ```
 
 ---
@@ -476,6 +617,7 @@ rosbag info calibration_bag_ros1.bag
 - [rosbags — ternaris](https://github.com/rpng/rosbags)
 - [Intel RealSense ROS 2 Wrapper](https://github.com/IntelRealSense/realsense-ros)
 - [Kalibr Wiki — Camera-IMU Calibration](https://github.com/ethz-asl/kalibr/wiki/camera-imu-calibration)
+- [imu_utils — Allan Deviation IMU Calibration](https://github.com/gaowenliang/imu_utils)
 
 ---
 
