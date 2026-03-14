@@ -25,9 +25,9 @@ Intel-RealSense-Calibration/
 ├── on_chip_calibration/
 │   └── README.md
 ├── imu_calibration/
-│   ├── scripts/
 │   └── README.md
 ├── camera_imu_extrinsic/
-│   ├── kalibr/
+│   ├── calib.io_kalibr_841x594_4x6_100.pdf  # kalibr image 
+|   |── kalibr_calibration_process.png
 │   └── README.md
 └── README.md
